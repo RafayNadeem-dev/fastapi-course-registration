@@ -7,13 +7,13 @@ from app.core.db import get_db
 from app.core.security import create_access_token
 from app.user import crud
 from app.user.models import User, UserRolesEnum
-from app.user.schemas.user import UserCreate, UserOut, UserRegister, UserUpdate
+from app.user.schemas.user import UserCreate, UserOut, UserCreate, UserUpdate
 
 router = APIRouter(tags=["auth"])
 
 
 @router.post("/auth/register", response_model=UserOut, status_code=status.HTTP_201_CREATED)
-def register(data: UserRegister, db: Session = Depends(get_db)):
+def register(data: UserCreate, db: Session = Depends(get_db)):
     payload = UserCreate(
         email=data.email,
         full_name=data.full_name,

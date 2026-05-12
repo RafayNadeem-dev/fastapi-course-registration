@@ -1,5 +1,5 @@
 from typing import Optional
-from pydantic import BaseModel, ConfigDict, EmailStr
+from pydantic import BaseModel, ConfigDict, EmailStr, Field
 
 from app.user.models import UserRolesEnum
 
@@ -12,21 +12,13 @@ class UserBase(BaseModel):
 
 
 class UserCreate(UserBase):
-    password: str
-
-
-class UserRegister(BaseModel):
-    email: EmailStr
-    full_name: Optional[str] = None
-    password: str
+    password: str = Field(min_length=8, max_length=100)
 
 
 class UserUpdate(BaseModel):
     email: Optional[EmailStr] = None
     full_name: Optional[str] = None
-    role: Optional[UserRolesEnum] = None
     is_active: Optional[bool] = None
-    password: Optional[str] = None
 
 
 class UserOut(UserBase):
