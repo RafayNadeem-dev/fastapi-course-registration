@@ -15,7 +15,14 @@ class EnrollmentStatusEnum(Enum):
 
     ENROLLED = "enrolled"
     COMPLETED = "completed"
-    DROPPED = "dropped"
+
+
+class ModuleStatusEnum(Enum):
+    """Per-student progress states for a course module."""
+
+    NOT_STARTED = "not_started"
+    IN_PROGRESS = "in_progress"
+    COMPLETED = "completed"
 
 
 class Course(BaseModel):
@@ -36,6 +43,11 @@ class Course(BaseModel):
         back_populates="course",
         cascade="all, delete-orphan",
     )
+    modules: Mapped[list["Module"]] = relationship(
+        back_populates="course",
+        cascade="all, delete-orphan",
+        order_by="Module.order",
+    )
 
 
 class Enrollment(BaseModel):
@@ -54,6 +66,10 @@ class Enrollment(BaseModel):
 
     student: Mapped["User"] = relationship(back_populates="enrolled_courses")
     course: Mapped["Course"] = relationship(back_populates="enrolled_students")
+    module_progress: Mapped[list["ModuleProgress"]] = relationship(
+        back_populates="enrollment",
+        cascade="all, delete-orphan",
+    )
 
     __table_args__ = (
         UniqueConstraint("student_id", "course_id", name="uq_enrollment_student_course"),
@@ -85,5 +101,51 @@ class CoursePreRequisite(BaseModel):
         ),
         CheckConstraint(
             "course_id != prerequisite_course_id", name="ck_no_self_prerequisite"
+        ),
+    )
+
+
+class Module(BaseModel):
+    __tablename__ = "modules"
+
+    id: Mapped[int] = mapped_column(primary_key=True, index=True)
+    course_id: Mapped[int] = mapped_column(
+        ForeignKey("courses.id", ondelete="CASCADE"), index=True
+    )
+    title: Mapped[str] = mapped_column(String, nullable=False)
+    description: Mapped[Optional[str]] = mapped_column(String, nullable=True)
+    order: Mapped[int] = mapped_column(default=0, nullable=False)
+
+    course: Mapped["Course"] = relationship(back_populates="modules")
+    progress_entries: Mapped[list["ModuleProgress"]] = relationship(
+        back_populates="module",
+        cascade="all, delete-orphan",
+    )
+
+    __table_args__ = (
+        UniqueConstraint("course_id", "order", name="uq_module_course_order"),
+    )
+
+
+class ModuleProgress(BaseModel):
+    __tablename__ = "module_progress"
+
+    id: Mapped[int] = mapped_column(primary_key=True, index=True)
+    enrollment_id: Mapped[int] = mapped_column(
+        ForeignKey("enrollments.id", ondelete="CASCADE"), index=True
+    )
+    module_id: Mapped[int] = mapped_column(
+        ForeignKey("modules.id", ondelete="CASCADE"), index=True
+    )
+    status: Mapped[str] = mapped_column(
+        String, default=ModuleStatusEnum.NOT_STARTED.value, nullable=False
+    )
+
+    enrollment: Mapped["Enrollment"] = relationship(back_populates="module_progress")
+    module: Mapped["Module"] = relationship(back_populates="progress_entries")
+
+    __table_args__ = (
+        UniqueConstraint(
+            "enrollment_id", "module_id", name="uq_module_progress_enrollment_module"
         ),
     )
