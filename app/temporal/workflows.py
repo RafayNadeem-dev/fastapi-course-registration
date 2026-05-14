@@ -15,6 +15,11 @@ with workflow.unsafe.imports_passed_through():
 class StudentEnrollmentWorkflow:
     @workflow.run
     async def run(self, student_id: int, course_id: int) -> dict:
+        workflow.logger.info(
+            "StudentEnrollmentWorkflow started student_id=%s course_id=%s",
+            student_id,
+            course_id,
+        )
         timeout = timedelta(seconds=10)
         retry = RetryPolicy(
             initial_interval=timedelta(seconds=1),
@@ -44,8 +49,14 @@ class StudentEnrollmentWorkflow:
             retry_policy=retry,
         )
 
-        return {
+        result = {
             "enrollment_id": enrollment_id,
             "modules_initialized": modules_created,
             "notification": notification,
         }
+        workflow.logger.info(
+            "StudentEnrollmentWorkflow finished enrollment_id=%s modules=%d",
+            enrollment_id,
+            modules_created,
+        )
+        return result
