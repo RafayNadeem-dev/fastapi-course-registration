@@ -12,6 +12,7 @@ services:
     depends_on:
       db:
         condition: service_healthy
+      temporal:
 
   db:
     image: postgres:16
