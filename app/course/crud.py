@@ -4,7 +4,7 @@ from sqlalchemy import select
 from sqlalchemy.orm import Session
 
 from app.commons.deps import pagination
-from app.course.models import Course
+from app.course.models import Course, Enrollment, EnrollmentStatusEnum
 from app.course.schemas.course import CourseCreate, CourseUpdate
 
 
@@ -63,3 +63,52 @@ def update_course(db: Session, course: Course, data: CourseUpdate) -> Course:
 def delete_course(db: Session, course: Course) -> None:
     db.delete(course)
     db.commit()
+
+
+def get_enrollment(
+    db: Session, student_id: int, course_id: int
+) -> Enrollment | None:
+    return db.execute(
+        select(Enrollment).where(
+            Enrollment.student_id == student_id,
+            Enrollment.course_id == course_id,
+        )
+    ).scalar_one_or_none()
+
+
+def list_enrollments_for_student(
+    db: Session,
+    student_id: int,
+    page: pagination,
+) -> Sequence[Enrollment]:
+    offset = (page.page - 1) * page.size
+    stmt = (
+        select(Enrollment)
+        .where(Enrollment.student_id == student_id)
+        .order_by(Enrollment.id)
+        .offset(offset)
+        .limit(page.size)
+    )
+    return db.execute(stmt).scalars().all()
+
+
+def enroll_student(db: Session, student_id: int, course_id: int) -> Enrollment:
+    if get_course(db, course_id) is None:
+        raise LookupError(f"Course {course_id} not found")
+
+    existing = get_enrollment(db, student_id, course_id)
+    if existing is not None:
+        if existing.status == EnrollmentStatusEnum.ENROLLED.value:
+            raise ValueError("Student already enrolled in this course")
+        if existing.status == EnrollmentStatusEnum.COMPLETED.value:
+            raise ValueError("Student already completed this course")
+
+    enrollment = Enrollment(
+        student_id=student_id,
+        course_id=course_id,
+        status=EnrollmentStatusEnum.ENROLLED.value,
+    )
+    db.add(enrollment)
+    db.commit()
+    db.refresh(enrollment)
+    return enrollment

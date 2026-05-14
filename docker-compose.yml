@@ -9,8 +9,11 @@ services:
     environment:
       PYTHONUNBUFFERED: "1"
       DATABASE_URL: postgresql+psycopg2://postgres:password@db:5432/course_assignment
+      TEMPORAL_HOST: temporal:7233
     depends_on:
       db:
+        condition: service_healthy
+      temporal:
         condition: service_healthy
 
   db:
@@ -28,6 +31,7 @@ services:
       interval: 5s
       timeout: 5s
       retries: 5
+
 
   # PostgreSQL database for Temporal Server persistence
   temporal-postgres:
@@ -59,6 +63,30 @@ services:
       - POSTGRES_SEEDS=temporal-postgres
       - POSTGRES_USER=temporal
       - POSTGRES_PWD=temporal
+    healthcheck:
+      test: ["CMD", "temporal", "operator", "cluster", "health", "--address", "temporal:7233"]
+      interval: 10s
+      timeout: 5s
+      retries: 10
+      start_period: 30s
+
+  worker:
+    build: .
+    command: ["python", "-m", "app.temporal.worker"]
+    restart: unless-stopped
+    volumes:
+      - ./app:/code/app
+    env_file: .env
+    environment:
+      PYTHONUNBUFFERED: "1"
+      DATABASE_URL: postgresql+psycopg2://postgres:password@db:5432/course_assignment
+      TEMPORAL_HOST: temporal:7233
+    depends_on:
+      db:
+        condition: service_healthy
+      temporal:
+        condition: service_healthy
+
   # Temporal Web UI
   temporal-ui:
     image: temporalio/ui:2.18.0 # Use a specific version for stability
