@@ -1,7 +1,7 @@
 from enum import Enum
 from typing import TYPE_CHECKING, Optional
 
-from sqlalchemy import CheckConstraint, ForeignKey, String, UniqueConstraint
+from sqlalchemy import BigInteger, CheckConstraint, ForeignKey, String, UniqueConstraint
 from sqlalchemy.orm import Mapped, mapped_column, relationship
 
 from app.core.db import BaseModel
@@ -47,6 +47,11 @@ class Course(BaseModel):
         back_populates="course",
         cascade="all, delete-orphan",
         order_by="Module.order",
+    )
+    files: Mapped[list["CourseFile"]] = relationship(
+        back_populates="course",
+        cascade="all, delete-orphan",
+        order_by="CourseFile.id",
     )
 
 
@@ -125,6 +130,21 @@ class Module(BaseModel):
     __table_args__ = (
         UniqueConstraint("course_id", "order", name="uq_module_course_order"),
     )
+
+
+class CourseFile(BaseModel):
+    __tablename__ = "course_files"
+
+    id: Mapped[int] = mapped_column(primary_key=True, index=True)
+    course_id: Mapped[int] = mapped_column(
+        ForeignKey("courses.id", ondelete="CASCADE"), index=True
+    )
+    filename: Mapped[str] = mapped_column(String, nullable=False)
+    stored_path: Mapped[str] = mapped_column(String, nullable=False, unique=True)
+    mime_type: Mapped[str] = mapped_column(String, nullable=False)
+    size_bytes: Mapped[int] = mapped_column(BigInteger, nullable=False)
+
+    course: Mapped["Course"] = relationship(back_populates="files")
 
 
 class ModuleProgress(BaseModel):

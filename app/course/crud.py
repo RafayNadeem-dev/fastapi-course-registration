@@ -4,7 +4,7 @@ from sqlalchemy import select
 from sqlalchemy.orm import Session
 
 from app.commons.deps import pagination
-from app.course.models import Course, Enrollment, EnrollmentStatusEnum
+from app.course.models import Course, CourseFile, Enrollment, EnrollmentStatusEnum
 from app.course.schemas.course import CourseCreate, CourseUpdate
 
 
@@ -90,6 +90,44 @@ def list_enrollments_for_student(
         .limit(page.size)
     )
     return db.execute(stmt).scalars().all()
+
+
+def create_course_file(
+    db: Session,
+    course_id: int,
+    filename: str,
+    stored_path: str,
+    mime_type: str,
+    size_bytes: int,
+) -> CourseFile:
+    course_file = CourseFile(
+        course_id=course_id,
+        filename=filename,
+        stored_path=stored_path,
+        mime_type=mime_type,
+        size_bytes=size_bytes,
+    )
+    db.add(course_file)
+    db.commit()
+    db.refresh(course_file)
+    return course_file
+
+
+def list_course_files(db: Session, course_id: int) -> Sequence[CourseFile]:
+    return db.execute(
+        select(CourseFile)
+        .where(CourseFile.course_id == course_id)
+        .order_by(CourseFile.id)
+    ).scalars().all()
+
+
+def get_course_file(db: Session, file_id: int) -> CourseFile | None:
+    return db.get(CourseFile, file_id)
+
+
+def delete_course_file(db: Session, course_file: CourseFile) -> None:
+    db.delete(course_file)
+    db.commit()
 
 
 def enroll_student(db: Session, student_id: int, course_id: int) -> Enrollment:

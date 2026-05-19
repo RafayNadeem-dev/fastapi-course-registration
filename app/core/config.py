@@ -14,6 +14,9 @@ class Settings(BaseSettings):
     TEMPORAL_NAMESPACE: str = "default"
     TEMPORAL_TASK_QUEUE: str = "hello-world-task-queue"
 
+    UPLOAD_DIR: str = "uploads"
+    MAX_UPLOAD_BYTES: int = 10 * 1024 * 1024
+
     model_config = SettingsConfigDict(env_file=".env", env_file_encoding="utf-8", extra="ignore")
 
 
