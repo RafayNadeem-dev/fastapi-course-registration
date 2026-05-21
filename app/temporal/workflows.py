@@ -20,11 +20,11 @@ with workflow.unsafe.imports_passed_through():
 @workflow.defn
 class StudentEnrollmentWorkflow:
     @workflow.run
-    async def run(self, student_id: int, course_id: int) -> dict:
+    async def run(self, student_id: int, course_version_id: int) -> dict:
         workflow.logger.info(
-            "StudentEnrollmentWorkflow started student_id=%s course_id=%s",
+            "StudentEnrollmentWorkflow started student_id=%s course_version_id=%s",
             student_id,
-            course_id,
+            course_version_id,
         )
         timeout = timedelta(seconds=10)
         retry = RetryPolicy(
@@ -36,21 +36,21 @@ class StudentEnrollmentWorkflow:
 
         enrollment_id = await workflow.execute_activity(
             record_enrollment,
-            args=[student_id, course_id],
+            args=[student_id, course_version_id],
             start_to_close_timeout=timeout,
             retry_policy=retry,
         )
 
         modules_created = await workflow.execute_activity(
             init_module_progress,
-            args=[enrollment_id, course_id],
+            args=[enrollment_id, course_version_id],
             start_to_close_timeout=timeout,
             retry_policy=retry,
         )
 
         notification = await workflow.execute_activity(
             send_welcome_notification,
-            args=[student_id, course_id],
+            args=[student_id, course_version_id],
             start_to_close_timeout=timeout,
             retry_policy=retry,
         )

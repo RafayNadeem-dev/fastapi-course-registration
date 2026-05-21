@@ -10,6 +10,7 @@ from app.course import crud
 from app.course.models import (
     Course,
     CourseFile,
+    CourseVersion,
     Enrollment,
     EnrollmentStatusEnum,
     FileParsingStatusEnum,
@@ -21,14 +22,14 @@ from app.course.parsing import ParsingError, chunk_markdown, convert_to_markdown
 
 
 @activity.defn
-def record_enrollment(student_id: int, course_id: int) -> int:
+def record_enrollment(student_id: int, course_version_id: int) -> int:
     """Insert Enrollment row. Idempotent: returns existing id if already enrolled."""
     db = sessionLocal()
     try:
         existing = db.execute(
             select(Enrollment).where(
                 Enrollment.student_id == student_id,
-                Enrollment.course_id == course_id,
+                Enrollment.course_version_id == course_version_id,
             )
         ).scalar_one_or_none()
         if existing is not None:
@@ -36,7 +37,7 @@ def record_enrollment(student_id: int, course_id: int) -> int:
 
         enrollment = Enrollment(
             student_id=student_id,
-            course_id=course_id,
+            course_version_id=course_version_id,
             status=EnrollmentStatusEnum.ENROLLED.value,
         )
         db.add(enrollment)
@@ -48,12 +49,14 @@ def record_enrollment(student_id: int, course_id: int) -> int:
 
 
 @activity.defn
-def init_module_progress(enrollment_id: int, course_id: int) -> int:
-    """Create ModuleProgress rows for each course module. Returns count created."""
+def init_module_progress(enrollment_id: int, course_version_id: int) -> int:
+    """Create ModuleProgress rows for each module of the course version."""
     db = sessionLocal()
     try:
         modules = (
-            db.execute(select(Module).where(Module.course_id == course_id))
+            db.execute(
+                select(Module).where(Module.course_version_id == course_version_id)
+            )
             .scalars()
             .all()
         )
@@ -183,12 +186,16 @@ def mark_file_failed(file_id: int, error: str) -> None:
 
 
 @activity.defn
-def send_welcome_notification(student_id: int, course_id: int) -> dict:
+def send_welcome_notification(student_id: int, course_version_id: int) -> dict:
     """Emit welcome notification. Real impl would call email/push provider."""
     db = sessionLocal()
     try:
-        course = db.get(Course, course_id)
-        course_name = course.name if course else f"#{course_id}"
+        version = db.get(CourseVersion, course_version_id)
+        if version is not None:
+            course = db.get(Course, version.course_id)
+            course_name = course.name if course else f"#{version.course_id}"
+        else:
+            course_name = f"version #{course_version_id}"
     finally:
         db.close()
 
@@ -196,7 +203,7 @@ def send_welcome_notification(student_id: int, course_id: int) -> dict:
     activity.logger.info(f"notification student={student_id}: {message}")
     return {
         "student_id": student_id,
-        "course_id": course_id,
+        "course_version_id": course_version_id,
         "message": message,
         "channel": "log",
     }

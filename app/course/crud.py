@@ -1,6 +1,7 @@
+from datetime import datetime, timezone
 from typing import Sequence
 
-from sqlalchemy import delete, select
+from sqlalchemy import delete, func, select
 from sqlalchemy.orm import Session
 
 from app.commons.deps import pagination
@@ -8,12 +9,18 @@ from app.course.models import (
     Course,
     CourseFile,
     CourseFileChunk,
+    CourseVersion,
+    CourseVersionStatusEnum,
     Enrollment,
     EnrollmentStatusEnum,
     FileParsingStatusEnum,
 )
 from app.course.parsing import ParsedChunk
 from app.course.schemas.course import CourseCreate, CourseUpdate
+
+
+class VersionNotEditableError(Exception):
+    """Raised when an edit is attempted on a non-draft course version."""
 
 
 def get_course(db: Session, course_id: int) -> Course | None:
@@ -28,10 +35,18 @@ def list_courses(
     db: Session,
     page: pagination,
     instructor_id: int | None = None,
+    require_published: bool = False,
 ) -> Sequence[Course]:
     stmt = select(Course)
     if instructor_id is not None:
         stmt = stmt.where(Course.instructor_id == instructor_id)
+    if require_published:
+        published_subq = (
+            select(CourseVersion.course_id)
+            .where(CourseVersion.status == CourseVersionStatusEnum.PUBLISHED.value)
+            .distinct()
+        )
+        stmt = stmt.where(Course.id.in_(published_subq))
     offset = (page.page - 1) * page.size
     stmt = stmt.order_by(Course.id).offset(offset).limit(page.size)
     return db.execute(stmt).scalars().all()
@@ -47,6 +62,14 @@ def create_course(db: Session, data: CourseCreate) -> Course:
         instructor_id=data.instructor_id,
     )
     db.add(course)
+    db.flush()
+
+    draft = CourseVersion(
+        course_id=course.id,
+        version_number=1,
+        status=CourseVersionStatusEnum.DRAFT.value,
+    )
+    db.add(draft)
     db.commit()
     db.refresh(course)
     return course
@@ -73,13 +96,124 @@ def delete_course(db: Session, course: Course) -> None:
     db.commit()
 
 
-def get_enrollment(
+def get_course_version(db: Session, version_id: int) -> CourseVersion | None:
+    return db.get(CourseVersion, version_id)
+
+
+def list_course_versions(db: Session, course_id: int) -> Sequence[CourseVersion]:
+    return (
+        db.execute(
+            select(CourseVersion)
+            .where(CourseVersion.course_id == course_id)
+            .order_by(CourseVersion.version_number)
+        )
+        .scalars()
+        .all()
+    )
+
+
+def get_latest_published_version(
+    db: Session, course_id: int
+) -> CourseVersion | None:
+    return db.execute(
+        select(CourseVersion)
+        .where(
+            CourseVersion.course_id == course_id,
+            CourseVersion.status == CourseVersionStatusEnum.PUBLISHED.value,
+        )
+        .order_by(CourseVersion.version_number.desc())
+        .limit(1)
+    ).scalar_one_or_none()
+
+
+def get_active_draft(db: Session, course_id: int) -> CourseVersion | None:
+    return db.execute(
+        select(CourseVersion).where(
+            CourseVersion.course_id == course_id,
+            CourseVersion.status == CourseVersionStatusEnum.DRAFT.value,
+        )
+    ).scalar_one_or_none()
+
+
+def ensure_draft_for_edit(db: Session, course_id: int) -> CourseVersion:
+    """Return active draft if exists; otherwise create empty DRAFT vN+1."""
+    existing = get_active_draft(db, course_id)
+    if existing is not None:
+        return existing
+
+    max_version = db.execute(
+        select(func.max(CourseVersion.version_number)).where(
+            CourseVersion.course_id == course_id
+        )
+    ).scalar()
+    next_number = (max_version or 0) + 1
+
+    draft = CourseVersion(
+        course_id=course_id,
+        version_number=next_number,
+        status=CourseVersionStatusEnum.DRAFT.value,
+    )
+    db.add(draft)
+    db.commit()
+    db.refresh(draft)
+    return draft
+
+
+def assert_version_editable(version: CourseVersion) -> None:
+    if version.status != CourseVersionStatusEnum.DRAFT.value:
+        raise VersionNotEditableError(
+            f"Course version {version.id} is {version.status}, not editable"
+        )
+
+
+def publish_version(db: Session, version: CourseVersion) -> CourseVersion:
+    if version.status != CourseVersionStatusEnum.DRAFT.value:
+        raise ValueError(
+            f"Course version {version.id} is {version.status}, cannot publish"
+        )
+
+    prior_published = (
+        db.execute(
+            select(CourseVersion).where(
+                CourseVersion.course_id == version.course_id,
+                CourseVersion.status == CourseVersionStatusEnum.PUBLISHED.value,
+            )
+        )
+        .scalars()
+        .all()
+    )
+    for prior in prior_published:
+        prior.status = CourseVersionStatusEnum.ARCHIVED.value
+        db.add(prior)
+
+    version.status = CourseVersionStatusEnum.PUBLISHED.value
+    version.published_at = datetime.now(timezone.utc)
+    db.add(version)
+    db.commit()
+    db.refresh(version)
+    return version
+
+
+def get_enrollment_for_course(
     db: Session, student_id: int, course_id: int
+) -> Enrollment | None:
+    return db.execute(
+        select(Enrollment)
+        .join(CourseVersion, Enrollment.course_version_id == CourseVersion.id)
+        .where(
+            Enrollment.student_id == student_id,
+            CourseVersion.course_id == course_id,
+        )
+    ).scalar_one_or_none()
+
+
+def get_enrollment(
+    db: Session, student_id: int, course_version_id: int
 ) -> Enrollment | None:
     return db.execute(
         select(Enrollment).where(
             Enrollment.student_id == student_id,
-            Enrollment.course_id == course_id,
+            Enrollment.course_version_id == course_version_id,
         )
     ).scalar_one_or_none()
 
@@ -102,14 +236,14 @@ def list_enrollments_for_student(
 
 def create_course_file(
     db: Session,
-    course_id: int,
+    course_version_id: int,
     filename: str,
     stored_path: str,
     mime_type: str,
     size_bytes: int,
 ) -> CourseFile:
     course_file = CourseFile(
-        course_id=course_id,
+        course_version_id=course_version_id,
         filename=filename,
         stored_path=stored_path,
         mime_type=mime_type,
@@ -121,10 +255,12 @@ def create_course_file(
     return course_file
 
 
-def list_course_files(db: Session, course_id: int) -> Sequence[CourseFile]:
+def list_course_files(
+    db: Session, course_version_id: int
+) -> Sequence[CourseFile]:
     return db.execute(
         select(CourseFile)
-        .where(CourseFile.course_id == course_id)
+        .where(CourseFile.course_version_id == course_version_id)
         .order_by(CourseFile.id)
     ).scalars().all()
 
@@ -191,11 +327,19 @@ def list_file_chunks(
     return db.execute(stmt).scalars().all()
 
 
-def enroll_student(db: Session, student_id: int, course_id: int) -> Enrollment:
+def enroll_student(
+    db: Session, student_id: int, course_id: int
+) -> Enrollment:
     if get_course(db, course_id) is None:
         raise LookupError(f"Course {course_id} not found")
 
-    existing = get_enrollment(db, student_id, course_id)
+    published = get_latest_published_version(db, course_id)
+    if published is None:
+        raise ValueError(
+            f"Course {course_id} has no published version available for enrollment"
+        )
+
+    existing = get_enrollment_for_course(db, student_id, course_id)
     if existing is not None:
         if existing.status == EnrollmentStatusEnum.ENROLLED.value:
             raise ValueError("Student already enrolled in this course")
@@ -204,7 +348,7 @@ def enroll_student(db: Session, student_id: int, course_id: int) -> Enrollment:
 
     enrollment = Enrollment(
         student_id=student_id,
-        course_id=course_id,
+        course_version_id=published.id,
         status=EnrollmentStatusEnum.ENROLLED.value,
     )
     db.add(enrollment)

@@ -5,7 +5,7 @@ from pydantic import BaseModel, ConfigDict
 
 class CourseFileOut(BaseModel):
     id: int
-    course_id: int
+    course_version_id: int
     filename: str
     mime_type: str
     size_bytes: int

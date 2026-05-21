@@ -10,7 +10,8 @@ from app.commons.storage import delete_stored_file, save_course_file
 from app.core.config import settings
 from app.core.db import get_db
 from app.course import crud
-from app.course.schemas.course import CourseOut, CourseUpdate
+from app.course.models import Course, CourseVersionStatusEnum
+from app.course.schemas.course import CourseOut, CourseUpdate, CourseVersionOut
 from app.course.schemas.course_file import CourseFileChunkOut, CourseFileOut
 from app.temporal.client import get_temporal_client
 from app.temporal.workflows import CourseFileIngestWorkflow
@@ -27,13 +28,27 @@ class InstructorCourseCreate(BaseModel):
     description: str | None = None
 
 
+def _course_out(db: Session, course: Course) -> CourseOut:
+    pub = crud.get_latest_published_version(db, course.id)
+    return CourseOut(
+        id=course.id,
+        name=course.name,
+        description=course.description,
+        instructor_id=course.instructor_id,
+        latest_published_version=(
+            CourseVersionOut.model_validate(pub) if pub is not None else None
+        ),
+    )
+
+
 @router.get("", response_model=list[CourseOut])
 def list_my_courses(
     page: pagination = Depends(),
     db: Session = Depends(get_db),
     current_user: User = Depends(require_instructor),
 ):
-    return crud.list_courses(db, page=page, instructor_id=current_user.id)
+    courses = crud.list_courses(db, page=page, instructor_id=current_user.id)
+    return [_course_out(db, c) for c in courses]
 
 
 @router.post("", response_model=CourseOut, status_code=status.HTTP_201_CREATED)
@@ -50,9 +65,10 @@ def create_my_course(
         instructor_id=current_user.id,
     )
     try:
-        return crud.create_course(db, payload)
+        course = crud.create_course(db, payload)
     except ValueError as exc:
         raise HTTPException(status.HTTP_409_CONFLICT, detail=str(exc))
+    return _course_out(db, course)
 
 
 @router.patch("/{course_id}", response_model=CourseOut)
@@ -75,9 +91,10 @@ def update_my_course(
             detail="Cannot reassign instructor",
         )
     try:
-        return crud.update_course(db, course, data)
+        course = crud.update_course(db, course, data)
     except ValueError as exc:
         raise HTTPException(status.HTTP_409_CONFLICT, detail=str(exc))
+    return _course_out(db, course)
 
 
 @router.delete("/{course_id}", status_code=status.HTTP_204_NO_CONTENT)
@@ -98,7 +115,7 @@ def delete_my_course(
 
 def _get_owned_course(
     db: Session, course_id: int, current_user: User
-):
+) -> Course:
     course = crud.get_course(db, course_id)
     if course is None:
         raise HTTPException(status.HTTP_404_NOT_FOUND, detail="Course not found")
@@ -107,6 +124,40 @@ def _get_owned_course(
             status.HTTP_403_FORBIDDEN, detail="You do not own this course"
         )
     return course
+
+
+@router.get("/{course_id}/versions", response_model=list[CourseVersionOut])
+def list_course_versions(
+    course_id: int,
+    db: Session = Depends(get_db),
+    current_user: User = Depends(require_instructor),
+):
+    _get_owned_course(db, course_id, current_user)
+    return crud.list_course_versions(db, course_id)
+
+
+@router.post(
+    "/{course_id}/versions/{version_id}/publish",
+    response_model=CourseVersionOut,
+)
+def publish_course_version(
+    course_id: int,
+    version_id: int,
+    db: Session = Depends(get_db),
+    current_user: User = Depends(require_instructor),
+):
+    _get_owned_course(db, course_id, current_user)
+
+    version = crud.get_course_version(db, version_id)
+    if version is None or version.course_id != course_id:
+        raise HTTPException(
+            status.HTTP_404_NOT_FOUND, detail="Course version not found"
+        )
+
+    try:
+        return crud.publish_version(db, version)
+    except ValueError as exc:
+        raise HTTPException(status.HTTP_409_CONFLICT, detail=str(exc))
 
 
 @router.post(
@@ -122,6 +173,12 @@ async def upload_course_file(
     temporal: Client = Depends(get_temporal_client),
 ):
     _get_owned_course(db, course_id, current_user)
+    draft = crud.ensure_draft_for_edit(db, course_id)
+
+    for existing in crud.list_course_files(db, draft.id):
+        prior_path = existing.stored_path
+        crud.delete_course_file(db, existing)
+        delete_stored_file(prior_path)
 
     stored_path, size_bytes, mime, original_filename = save_course_file(
         course_id, file
@@ -129,7 +186,7 @@ async def upload_course_file(
     try:
         course_file = crud.create_course_file(
             db,
-            course_id=course_id,
+            course_version_id=draft.id,
             filename=original_filename,
             stored_path=str(stored_path),
             mime_type=mime,
@@ -156,7 +213,30 @@ def list_course_files(
     current_user: User = Depends(require_instructor),
 ):
     _get_owned_course(db, course_id, current_user)
-    return crud.list_course_files(db, course_id)
+    target = crud.get_active_draft(db, course_id) or crud.get_latest_published_version(
+        db, course_id
+    )
+    if target is None:
+        return []
+    return crud.list_course_files(db, target.id)
+
+
+def _get_file_on_draft(db: Session, course_id: int, file_id: int):
+    course_file = crud.get_course_file(db, file_id)
+    if course_file is None:
+        raise HTTPException(status.HTTP_404_NOT_FOUND, detail="File not found")
+    version = crud.get_course_version(db, course_file.course_version_id)
+    if version is None or version.course_id != course_id:
+        raise HTTPException(status.HTTP_404_NOT_FOUND, detail="File not found")
+    if version.status != CourseVersionStatusEnum.DRAFT.value:
+        raise HTTPException(
+            status.HTTP_409_CONFLICT,
+            detail=(
+                f"File belongs to {version.status} version {version.id}; "
+                "only draft versions can be modified"
+            ),
+        )
+    return course_file
 
 
 @router.delete(
@@ -170,10 +250,7 @@ def delete_course_file(
     current_user: User = Depends(require_instructor),
 ):
     _get_owned_course(db, course_id, current_user)
-
-    course_file = crud.get_course_file(db, file_id)
-    if course_file is None or course_file.course_id != course_id:
-        raise HTTPException(status.HTTP_404_NOT_FOUND, detail="File not found")
+    course_file = _get_file_on_draft(db, course_id, file_id)
 
     stored_path = course_file.stored_path
     crud.delete_course_file(db, course_file)
@@ -192,10 +269,7 @@ async def reparse_course_file(
     temporal: Client = Depends(get_temporal_client),
 ):
     _get_owned_course(db, course_id, current_user)
-
-    course_file = crud.get_course_file(db, file_id)
-    if course_file is None or course_file.course_id != course_id:
-        raise HTTPException(status.HTTP_404_NOT_FOUND, detail="File not found")
+    course_file = _get_file_on_draft(db, course_id, file_id)
 
     workflow_id = f"ingest-file-{course_file.id}-{uuid.uuid4()}"
     handle = await temporal.start_workflow(
@@ -226,7 +300,10 @@ def list_course_file_chunks(
     _get_owned_course(db, course_id, current_user)
 
     course_file = crud.get_course_file(db, file_id)
-    if course_file is None or course_file.course_id != course_id:
+    if course_file is None:
+        raise HTTPException(status.HTTP_404_NOT_FOUND, detail="File not found")
+    version = crud.get_course_version(db, course_file.course_version_id)
+    if version is None or version.course_id != course_id:
         raise HTTPException(status.HTTP_404_NOT_FOUND, detail="File not found")
 
     return crud.list_file_chunks(db, file_id, page=page)
