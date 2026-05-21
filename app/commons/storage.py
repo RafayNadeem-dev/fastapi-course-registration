@@ -69,3 +69,6 @@ def delete_stored_file(stored_path: str) -> None:
     path = Path(stored_path)
     if path.exists():
         path.unlink()
+    md_sibling = path.with_suffix(path.suffix + ".md")
+    if md_sibling.exists():
+        md_sibling.unlink()

@@ -17,6 +17,9 @@ class Settings(BaseSettings):
     UPLOAD_DIR: str = "uploads"
     MAX_UPLOAD_BYTES: int = 10 * 1024 * 1024
 
+    CHUNK_SIZE: int = 512
+    CHUNK_OVERLAP: int = 50
+
     model_config = SettingsConfigDict(env_file=".env", env_file_encoding="utf-8", extra="ignore")
 
 
