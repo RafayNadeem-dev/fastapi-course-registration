@@ -23,7 +23,7 @@ def main() -> None:
     print(f"Connecting to: {settings.DATABASE_URL}")
     if "--reset" in sys.argv:
         print("Dropping existing tables...")
-        Base.metadata.drop_all(bind=engine, cascade="all")
+        Base.metadata.drop_all(bind=engine)
     Base.metadata.create_all(bind=engine)
     print("Tables created:")
     for table in Base.metadata.sorted_tables:
