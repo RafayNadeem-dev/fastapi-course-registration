@@ -5,11 +5,13 @@ services:
       - "8000:8000"
     volumes:
       - ./app:/code/app
+      - uploads_data:/code/uploads
     env_file: .env
     environment:
       PYTHONUNBUFFERED: "1"
       DATABASE_URL: postgresql+psycopg2://postgres:password@db:5432/course_assignment
       TEMPORAL_HOST: temporal:7233
+      UPLOAD_DIR: /code/uploads
     depends_on:
       db:
         condition: service_healthy
@@ -76,11 +78,13 @@ services:
     restart: unless-stopped
     volumes:
       - ./app:/code/app
+      - uploads_data:/code/uploads
     env_file: .env
     environment:
       PYTHONUNBUFFERED: "1"
       DATABASE_URL: postgresql+psycopg2://postgres:password@db:5432/course_assignment
       TEMPORAL_HOST: temporal:7233
+      UPLOAD_DIR: /code/uploads
     depends_on:
       db:
         condition: service_healthy
@@ -101,3 +105,4 @@ services:
 volumes:
   postgres_data:
   temporal-postgres-data:
+  uploads_data:

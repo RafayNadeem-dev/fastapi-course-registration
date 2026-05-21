@@ -18,11 +18,16 @@ configure_mappers()
 
 from app.core.config import settings
 from app.temporal.activities import (
+    convert_file_to_markdown,
     init_module_progress,
+    mark_file_completed,
+    mark_file_failed,
+    mark_file_processing,
+    parse_and_chunk_file,
     record_enrollment,
     send_welcome_notification,
 )
-from app.temporal.workflows import StudentEnrollmentWorkflow
+from app.temporal.workflows import CourseFileIngestWorkflow, StudentEnrollmentWorkflow
 
 logging.basicConfig(
     level=logging.INFO,
@@ -43,11 +48,16 @@ async def main() -> None:
     worker = Worker(
         client,
         task_queue=settings.TEMPORAL_TASK_QUEUE,
-        workflows=[StudentEnrollmentWorkflow],
+        workflows=[StudentEnrollmentWorkflow, CourseFileIngestWorkflow],
         activities=[
             record_enrollment,
             init_module_progress,
             send_welcome_notification,
+            mark_file_processing,
+            convert_file_to_markdown,
+            parse_and_chunk_file,
+            mark_file_completed,
+            mark_file_failed,
         ],
         activity_executor=ThreadPoolExecutor(max_workers=50),
     )

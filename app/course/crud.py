@@ -1,10 +1,18 @@
 from typing import Sequence
 
-from sqlalchemy import select
+from sqlalchemy import delete, select
 from sqlalchemy.orm import Session
 
 from app.commons.deps import pagination
-from app.course.models import Course, Enrollment, EnrollmentStatusEnum
+from app.course.models import (
+    Course,
+    CourseFile,
+    CourseFileChunk,
+    Enrollment,
+    EnrollmentStatusEnum,
+    FileParsingStatusEnum,
+)
+from app.course.parsing import ParsedChunk
 from app.course.schemas.course import CourseCreate, CourseUpdate
 
 
@@ -86,6 +94,97 @@ def list_enrollments_for_student(
         select(Enrollment)
         .where(Enrollment.student_id == student_id)
         .order_by(Enrollment.id)
+        .offset(offset)
+        .limit(page.size)
+    )
+    return db.execute(stmt).scalars().all()
+
+
+def create_course_file(
+    db: Session,
+    course_id: int,
+    filename: str,
+    stored_path: str,
+    mime_type: str,
+    size_bytes: int,
+) -> CourseFile:
+    course_file = CourseFile(
+        course_id=course_id,
+        filename=filename,
+        stored_path=stored_path,
+        mime_type=mime_type,
+        size_bytes=size_bytes,
+    )
+    db.add(course_file)
+    db.commit()
+    db.refresh(course_file)
+    return course_file
+
+
+def list_course_files(db: Session, course_id: int) -> Sequence[CourseFile]:
+    return db.execute(
+        select(CourseFile)
+        .where(CourseFile.course_id == course_id)
+        .order_by(CourseFile.id)
+    ).scalars().all()
+
+
+def get_course_file(db: Session, file_id: int) -> CourseFile | None:
+    return db.get(CourseFile, file_id)
+
+
+def delete_course_file(db: Session, course_file: CourseFile) -> None:
+    db.delete(course_file)
+    db.commit()
+
+
+def update_file_parsing_status(
+    db: Session,
+    file_id: int,
+    status: FileParsingStatusEnum,
+    error: str | None = None,
+) -> None:
+    course_file = db.get(CourseFile, file_id)
+    if course_file is None:
+        raise LookupError(f"CourseFile {file_id} not found")
+    course_file.parsing_status = status.value
+    course_file.parsing_error = error
+    db.add(course_file)
+    db.commit()
+
+
+def replace_file_chunks(
+    db: Session, file_id: int, chunks: Sequence[ParsedChunk]
+) -> int:
+    """Atomic wipe+insert. Idempotent under Temporal activity retries."""
+    db.execute(
+        delete(CourseFileChunk).where(CourseFileChunk.course_file_id == file_id)
+    )
+    db.add_all(
+        [
+            CourseFileChunk(
+                course_file_id=file_id,
+                chunk_index=c.chunk_index,
+                text=c.text,
+                page_number=c.page_number,
+                char_count=c.char_count,
+                chunk_metadata=c.metadata,
+            )
+            for c in chunks
+        ]
+    )
+    db.commit()
+    return len(chunks)
+
+
+def list_file_chunks(
+    db: Session, file_id: int, page: pagination
+) -> Sequence[CourseFileChunk]:
+    offset = (page.page - 1) * page.size
+    stmt = (
+        select(CourseFileChunk)
+        .where(CourseFileChunk.course_file_id == file_id)
+        .order_by(CourseFileChunk.chunk_index)
         .offset(offset)
         .limit(page.size)
     )

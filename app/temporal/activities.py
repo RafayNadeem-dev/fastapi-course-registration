@@ -1,15 +1,23 @@
+from pathlib import Path
+
 from sqlalchemy import select
 from temporalio import activity
+from temporalio.exceptions import ApplicationError
 
+from app.core.config import settings
 from app.core.db import sessionLocal
+from app.course import crud
 from app.course.models import (
     Course,
+    CourseFile,
     Enrollment,
     EnrollmentStatusEnum,
+    FileParsingStatusEnum,
     Module,
     ModuleProgress,
     ModuleStatusEnum,
 )
+from app.course.parsing import ParsingError, chunk_markdown, convert_to_markdown
 
 
 @activity.defn
@@ -73,6 +81,103 @@ def init_module_progress(enrollment_id: int, course_id: int) -> int:
             created += 1
         db.commit()
         return created
+    finally:
+        db.close()
+
+
+@activity.defn
+def mark_file_processing(file_id: int) -> None:
+    db = sessionLocal()
+    try:
+        crud.update_file_parsing_status(
+            db, file_id, FileParsingStatusEnum.PROCESSING, error=None
+        )
+    finally:
+        db.close()
+
+
+@activity.defn
+def convert_file_to_markdown(file_id: int) -> str:
+    """Convert source file to markdown on disk. Returns md path.
+
+    Idempotent: skips conversion when `.md` sibling already exists.
+    """
+    db = sessionLocal()
+    try:
+        course_file = db.get(CourseFile, file_id)
+        if course_file is None:
+            raise ApplicationError(
+                f"CourseFile {file_id} not found",
+                type="ParsingPermanentError",
+                non_retryable=True,
+            )
+        stored_path = course_file.stored_path
+        mime_type = course_file.mime_type
+    finally:
+        db.close()
+
+    try:
+        md_path = convert_to_markdown(stored_path, mime_type)
+    except FileNotFoundError as exc:
+        raise ApplicationError(
+            str(exc), type="ParsingPermanentError", non_retryable=True
+        ) from exc
+    except ParsingError as exc:
+        raise ApplicationError(
+            str(exc), type=type(exc).__name__, non_retryable=True
+        ) from exc
+    return str(md_path)
+
+
+@activity.defn
+def parse_and_chunk_file(file_id: int, md_path: str) -> int:
+    """Chunk the converted markdown and replace chunks atomically.
+
+    Idempotent under Temporal activity retries: re-runs wipe prior chunks
+    and re-insert the full set in one transaction. Permanent failures raise
+    ParsingPermanentError.
+    """
+    try:
+        chunks = chunk_markdown(
+            Path(md_path),
+            chunk_size=settings.CHUNK_SIZE,
+            chunk_overlap=settings.CHUNK_OVERLAP,
+        )
+    except FileNotFoundError as exc:
+        raise ApplicationError(
+            str(exc), type="ParsingPermanentError", non_retryable=True
+        ) from exc
+    except ParsingError as exc:
+        raise ApplicationError(
+            str(exc), type=type(exc).__name__, non_retryable=True
+        ) from exc
+
+    db = sessionLocal()
+    try:
+        return crud.replace_file_chunks(db, file_id, chunks)
+    finally:
+        db.close()
+
+
+@activity.defn
+def mark_file_completed(file_id: int, chunk_count: int) -> int:
+    db = sessionLocal()
+    try:
+        crud.update_file_parsing_status(
+            db, file_id, FileParsingStatusEnum.COMPLETED, error=None
+        )
+        return chunk_count
+    finally:
+        db.close()
+
+
+@activity.defn
+def mark_file_failed(file_id: int, error: str) -> None:
+    db = sessionLocal()
+    try:
+        crud.update_file_parsing_status(
+            db, file_id, FileParsingStatusEnum.FAILED, error=error
+        )
     finally:
         db.close()
 

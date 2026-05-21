@@ -7,6 +7,9 @@ cffi==2.0.0
 click==8.3.3
 colorama==0.4.6
 cryptography==48.0.0
+langchain-text-splitters==0.3.8
+mammoth==1.8.0
+pymupdf4llm==0.0.17
 dnspython==2.8.0
 ecdsa==0.19.2
 email-validator==2.3.0

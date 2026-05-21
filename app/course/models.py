@@ -1,7 +1,17 @@
 from enum import Enum
 from typing import TYPE_CHECKING, Optional
 
-from sqlalchemy import CheckConstraint, ForeignKey, String, UniqueConstraint
+from sqlalchemy import (
+    BigInteger,
+    CheckConstraint,
+    ForeignKey,
+    Integer,
+    String,
+    Text,
+    UniqueConstraint,
+)
+from sqlalchemy import text as sa_text
+from sqlalchemy.dialects.postgresql import JSONB
 from sqlalchemy.orm import Mapped, mapped_column, relationship
 
 from app.core.db import BaseModel
@@ -23,6 +33,15 @@ class ModuleStatusEnum(Enum):
     NOT_STARTED = "not_started"
     IN_PROGRESS = "in_progress"
     COMPLETED = "completed"
+
+
+class FileParsingStatusEnum(Enum):
+    """Lifecycle states for parsing an uploaded course file into chunks."""
+
+    PENDING = "pending"
+    PROCESSING = "processing"
+    COMPLETED = "completed"
+    FAILED = "failed"
 
 
 class Course(BaseModel):
@@ -47,6 +66,11 @@ class Course(BaseModel):
         back_populates="course",
         cascade="all, delete-orphan",
         order_by="Module.order",
+    )
+    files: Mapped[list["CourseFile"]] = relationship(
+        back_populates="course",
+        cascade="all, delete-orphan",
+        order_by="CourseFile.id",
     )
 
 
@@ -124,6 +148,58 @@ class Module(BaseModel):
 
     __table_args__ = (
         UniqueConstraint("course_id", "order", name="uq_module_course_order"),
+    )
+
+
+class CourseFile(BaseModel):
+    __tablename__ = "course_files"
+
+    id: Mapped[int] = mapped_column(primary_key=True, index=True)
+    course_id: Mapped[int] = mapped_column(
+        ForeignKey("courses.id", ondelete="CASCADE"), index=True
+    )
+    filename: Mapped[str] = mapped_column(String, nullable=False)
+    stored_path: Mapped[str] = mapped_column(String, nullable=False, unique=True)
+    mime_type: Mapped[str] = mapped_column(String, nullable=False)
+    size_bytes: Mapped[int] = mapped_column(BigInteger, nullable=False)
+    parsing_status: Mapped[str] = mapped_column(
+        String,
+        default=FileParsingStatusEnum.PENDING.value,
+        server_default=FileParsingStatusEnum.PENDING.value,
+        nullable=False,
+        index=True,
+    )
+    parsing_error: Mapped[Optional[str]] = mapped_column(Text, nullable=True)
+
+    course: Mapped["Course"] = relationship(back_populates="files")
+    chunks: Mapped[list["CourseFileChunk"]] = relationship(
+        back_populates="file",
+        cascade="all, delete-orphan",
+        order_by="CourseFileChunk.chunk_index",
+    )
+
+
+class CourseFileChunk(BaseModel):
+    __tablename__ = "course_file_chunks"
+
+    id: Mapped[int] = mapped_column(primary_key=True, index=True)
+    course_file_id: Mapped[int] = mapped_column(
+        ForeignKey("course_files.id", ondelete="CASCADE"), index=True
+    )
+    chunk_index: Mapped[int] = mapped_column(Integer, nullable=False)
+    text: Mapped[str] = mapped_column(Text, nullable=False)
+    page_number: Mapped[Optional[int]] = mapped_column(Integer, nullable=True)
+    char_count: Mapped[int] = mapped_column(Integer, nullable=False)
+    chunk_metadata: Mapped[dict] = mapped_column(
+        JSONB, nullable=False, server_default=sa_text("'{}'::jsonb")
+    )
+
+    file: Mapped["CourseFile"] = relationship(back_populates="chunks")
+
+    __table_args__ = (
+        UniqueConstraint(
+            "course_file_id", "chunk_index", name="uq_chunk_file_index"
+        ),
     )
 
 
