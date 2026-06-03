@@ -1,4 +1,5 @@
 from datetime import timedelta
+from typing import Awaitable, Callable
 
 from temporalio import workflow
 from temporalio.common import RetryPolicy
@@ -7,6 +8,8 @@ from temporalio.exceptions import ActivityError
 with workflow.unsafe.imports_passed_through():
     from app.temporal.activities import (
         convert_file_to_markdown,
+        delete_enrollment,
+        delete_module_progress,
         init_module_progress,
         mark_file_completed,
         mark_file_failed,
@@ -34,26 +37,55 @@ class StudentEnrollmentWorkflow:
             backoff_coefficient=2.0,
         )
 
-        enrollment_id = await workflow.execute_activity(
-            record_enrollment,
-            args=[student_id, course_version_id],
-            start_to_close_timeout=timeout,
-            retry_policy=retry,
-        )
+        # Saga: each completed forward step pushes its undo onto this stack.
+        # On any failure we run the stack in reverse (LIFO) to roll back.
+        compensations: list[Callable[[], Awaitable[None]]] = []
 
-        modules_created = await workflow.execute_activity(
-            init_module_progress,
-            args=[enrollment_id, course_version_id],
-            start_to_close_timeout=timeout,
-            retry_policy=retry,
-        )
+        try:
+            enrollment_id = await workflow.execute_activity(
+                record_enrollment,
+                args=[student_id, course_version_id],
+                start_to_close_timeout=timeout,
+                retry_policy=retry,
+            )
+            compensations.append(
+                lambda: workflow.execute_activity(
+                    delete_enrollment,
+                    args=[enrollment_id],
+                    start_to_close_timeout=timeout,
+                    retry_policy=retry,
+                )
+            )
 
-        notification = await workflow.execute_activity(
-            send_welcome_notification,
-            args=[student_id, course_version_id],
-            start_to_close_timeout=timeout,
-            retry_policy=retry,
-        )
+            modules_created = await workflow.execute_activity(
+                init_module_progress,
+                args=[enrollment_id, course_version_id],
+                start_to_close_timeout=timeout,
+                retry_policy=retry,
+            )
+            compensations.append(
+                lambda: workflow.execute_activity(
+                    delete_module_progress,
+                    args=[enrollment_id],
+                    start_to_close_timeout=timeout,
+                    retry_policy=retry,
+                )
+            )
+
+            notification = await workflow.execute_activity(
+                send_welcome_notification,
+                args=[student_id, course_version_id],
+                start_to_close_timeout=timeout,
+                retry_policy=retry,
+            )
+        except Exception as exc:
+            workflow.logger.warning(
+                "StudentEnrollmentWorkflow failed, compensating %d step(s): %s",
+                len(compensations),
+                exc,
+            )
+            await self._compensate(compensations)
+            raise
 
         result = {
             "enrollment_id": enrollment_id,
@@ -66,6 +98,18 @@ class StudentEnrollmentWorkflow:
             modules_created,
         )
         return result
+
+    @staticmethod
+    async def _compensate(
+        compensations: list[Callable[[], Awaitable[None]]],
+    ) -> None:
+        """Run undo actions in reverse order. A failing compensation is logged
+        and the rest still run, so one bad rollback doesn't strand the others."""
+        for undo in reversed(compensations):
+            try:
+                await undo()
+            except Exception as comp_exc:
+                workflow.logger.error("compensation step failed: %s", comp_exc)
 
 
 @workflow.defn

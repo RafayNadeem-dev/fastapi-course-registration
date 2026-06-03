@@ -15,6 +15,15 @@ class UserCreate(UserBase):
     password: str = Field(min_length=8, max_length=100)
 
 
+class UserRegister(BaseModel):
+    """Public self-registration. Deliberately has no `role` field so callers
+    cannot mass-assign themselves instructor/admin. The route forces STUDENT."""
+
+    email: EmailStr
+    full_name: Optional[str] = None
+    password: str = Field(min_length=8, max_length=100)
+
+
 class UserUpdate(BaseModel):
     email: Optional[EmailStr] = None
     full_name: Optional[str] = None

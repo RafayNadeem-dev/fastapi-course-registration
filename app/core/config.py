@@ -20,6 +20,10 @@ class Settings(BaseSettings):
     CHUNK_SIZE: int = 512
     CHUNK_OVERLAP: int = 50
 
+    # First admin account, created by the seed_admin script on startup.
+    FIRST_ADMIN_EMAIL: str = "admin@example.com"
+    FIRST_ADMIN_PASSWORD: str = "password"
+
     model_config = SettingsConfigDict(env_file=".env", env_file_encoding="utf-8", extra="ignore")
 
 

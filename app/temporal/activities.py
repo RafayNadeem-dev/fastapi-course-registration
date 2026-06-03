@@ -1,6 +1,6 @@
 from pathlib import Path
 
-from sqlalchemy import select
+from sqlalchemy import delete, select
 from temporalio import activity
 from temporalio.exceptions import ApplicationError
 
@@ -84,6 +84,39 @@ def init_module_progress(enrollment_id: int, course_version_id: int) -> int:
             created += 1
         db.commit()
         return created
+    finally:
+        db.close()
+
+
+# --- compensating activities (saga rollback) ---------------------------------
+# Each undoes a step of StudentEnrollmentWorkflow. They are idempotent: a DELETE
+# of already-absent rows is a no-op, so they are safe under Temporal retries and
+# safe to invoke even if the forward step partially applied.
+
+
+@activity.defn
+def delete_module_progress(enrollment_id: int) -> int:
+    """Compensate init_module_progress: remove ModuleProgress rows for enrollment."""
+    db = sessionLocal()
+    try:
+        result = db.execute(
+            delete(ModuleProgress).where(
+                ModuleProgress.enrollment_id == enrollment_id
+            )
+        )
+        db.commit()
+        return result.rowcount or 0
+    finally:
+        db.close()
+
+
+@activity.defn
+def delete_enrollment(enrollment_id: int) -> None:
+    """Compensate record_enrollment: remove the Enrollment row."""
+    db = sessionLocal()
+    try:
+        db.execute(delete(Enrollment).where(Enrollment.id == enrollment_id))
+        db.commit()
     finally:
         db.close()
 

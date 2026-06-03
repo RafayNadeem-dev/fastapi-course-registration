@@ -1,0 +1,14 @@
+{
+  "permissions": {
+    "allow": [
+      "Bash(git commit *)",
+      "Bash(git add *)",
+      "Bash(docker compose up *)",
+      "Bash(docker compose *)",
+      "Bash(docker stats *)",
+      "Bash(xargs ls -la)",
+      "Bash(./venv/Scripts/python.exe *)",
+      "PowerShell(head *)"
+    ]
+  }
+}

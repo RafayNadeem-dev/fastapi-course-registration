@@ -19,6 +19,8 @@ configure_mappers()
 from app.core.config import settings
 from app.temporal.activities import (
     convert_file_to_markdown,
+    delete_enrollment,
+    delete_module_progress,
     init_module_progress,
     mark_file_completed,
     mark_file_failed,
@@ -53,6 +55,8 @@ async def main() -> None:
             record_enrollment,
             init_module_progress,
             send_welcome_notification,
+            delete_enrollment,
+            delete_module_progress,
             mark_file_processing,
             convert_file_to_markdown,
             parse_and_chunk_file,
