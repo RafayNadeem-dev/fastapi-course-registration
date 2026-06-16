@@ -1,10 +1,13 @@
+from datetime import datetime
 from enum import Enum
 from typing import TYPE_CHECKING, Optional
 
 from sqlalchemy import (
     BigInteger,
     CheckConstraint,
+    DateTime,
     ForeignKey,
+    Index,
     Integer,
     String,
     Text,
@@ -44,6 +47,14 @@ class FileParsingStatusEnum(Enum):
     FAILED = "failed"
 
 
+class CourseVersionStatusEnum(Enum):
+    """Lifecycle states for a course version revision."""
+
+    DRAFT = "draft"
+    PUBLISHED = "published"
+    ARCHIVED = "archived"
+
+
 class Course(BaseModel):
     __tablename__ = "courses"
 
@@ -58,19 +69,57 @@ class Course(BaseModel):
         foreign_keys="CoursePreRequisite.course_id",
         cascade="all, delete-orphan",
     )
-    enrolled_students: Mapped[list["Enrollment"]] = relationship(
+    versions: Mapped[list["CourseVersion"]] = relationship(
         back_populates="course",
         cascade="all, delete-orphan",
+        order_by="CourseVersion.version_number",
     )
+
+
+class CourseVersion(BaseModel):
+    __tablename__ = "course_versions"
+
+    id: Mapped[int] = mapped_column(primary_key=True, index=True)
+    course_id: Mapped[int] = mapped_column(
+        ForeignKey("courses.id", ondelete="CASCADE"), index=True
+    )
+    version_number: Mapped[int] = mapped_column(Integer, nullable=False)
+    status: Mapped[str] = mapped_column(
+        String,
+        default=CourseVersionStatusEnum.DRAFT.value,
+        server_default=CourseVersionStatusEnum.DRAFT.value,
+        nullable=False,
+        index=True,
+    )
+    published_at: Mapped[Optional[datetime]] = mapped_column(
+        DateTime(timezone=True), nullable=True
+    )
+
+    course: Mapped["Course"] = relationship(back_populates="versions")
     modules: Mapped[list["Module"]] = relationship(
-        back_populates="course",
+        back_populates="course_version",
         cascade="all, delete-orphan",
         order_by="Module.order",
     )
     files: Mapped[list["CourseFile"]] = relationship(
-        back_populates="course",
+        back_populates="course_version",
         cascade="all, delete-orphan",
         order_by="CourseFile.id",
+    )
+    enrollments: Mapped[list["Enrollment"]] = relationship(
+        back_populates="course_version",
+    )
+
+    __table_args__ = (
+        UniqueConstraint(
+            "course_id", "version_number", name="uq_course_version_number"
+        ),
+        Index(
+            "uq_course_single_draft",
+            "course_id",
+            unique=True,
+            postgresql_where=sa_text("status = 'draft'"),
+        ),
     )
 
 
@@ -81,22 +130,24 @@ class Enrollment(BaseModel):
     student_id: Mapped[int] = mapped_column(
         ForeignKey("users.id", ondelete="CASCADE"), index=True
     )
-    course_id: Mapped[int] = mapped_column(
-        ForeignKey("courses.id", ondelete="CASCADE"), index=True
+    course_version_id: Mapped[int] = mapped_column(
+        ForeignKey("course_versions.id", ondelete="RESTRICT"), index=True
     )
     status: Mapped[str] = mapped_column(
         String, default=EnrollmentStatusEnum.ENROLLED.value, nullable=False
     )
 
     student: Mapped["User"] = relationship(back_populates="enrolled_courses")
-    course: Mapped["Course"] = relationship(back_populates="enrolled_students")
+    course_version: Mapped["CourseVersion"] = relationship(back_populates="enrollments")
     module_progress: Mapped[list["ModuleProgress"]] = relationship(
         back_populates="enrollment",
         cascade="all, delete-orphan",
     )
 
     __table_args__ = (
-        UniqueConstraint("student_id", "course_id", name="uq_enrollment_student_course"),
+        UniqueConstraint(
+            "student_id", "course_version_id", name="uq_enrollment_student_version"
+        ),
     )
 
 
@@ -133,21 +184,23 @@ class Module(BaseModel):
     __tablename__ = "modules"
 
     id: Mapped[int] = mapped_column(primary_key=True, index=True)
-    course_id: Mapped[int] = mapped_column(
-        ForeignKey("courses.id", ondelete="CASCADE"), index=True
+    course_version_id: Mapped[int] = mapped_column(
+        ForeignKey("course_versions.id", ondelete="CASCADE"), index=True
     )
     title: Mapped[str] = mapped_column(String, nullable=False)
     description: Mapped[Optional[str]] = mapped_column(String, nullable=True)
     order: Mapped[int] = mapped_column(default=0, nullable=False)
 
-    course: Mapped["Course"] = relationship(back_populates="modules")
+    course_version: Mapped["CourseVersion"] = relationship(back_populates="modules")
     progress_entries: Mapped[list["ModuleProgress"]] = relationship(
         back_populates="module",
         cascade="all, delete-orphan",
     )
 
     __table_args__ = (
-        UniqueConstraint("course_id", "order", name="uq_module_course_order"),
+        UniqueConstraint(
+            "course_version_id", "order", name="uq_module_version_order"
+        ),
     )
 
 
@@ -155,11 +208,11 @@ class CourseFile(BaseModel):
     __tablename__ = "course_files"
 
     id: Mapped[int] = mapped_column(primary_key=True, index=True)
-    course_id: Mapped[int] = mapped_column(
-        ForeignKey("courses.id", ondelete="CASCADE"), index=True
+    course_version_id: Mapped[int] = mapped_column(
+        ForeignKey("course_versions.id", ondelete="CASCADE"), index=True
     )
     filename: Mapped[str] = mapped_column(String, nullable=False)
-    stored_path: Mapped[str] = mapped_column(String, nullable=False, unique=True)
+    stored_path: Mapped[str] = mapped_column(String, nullable=False)
     mime_type: Mapped[str] = mapped_column(String, nullable=False)
     size_bytes: Mapped[int] = mapped_column(BigInteger, nullable=False)
     parsing_status: Mapped[str] = mapped_column(
@@ -171,7 +224,7 @@ class CourseFile(BaseModel):
     )
     parsing_error: Mapped[Optional[str]] = mapped_column(Text, nullable=True)
 
-    course: Mapped["Course"] = relationship(back_populates="files")
+    course_version: Mapped["CourseVersion"] = relationship(back_populates="files")
     chunks: Mapped[list["CourseFileChunk"]] = relationship(
         back_populates="file",
         cascade="all, delete-orphan",

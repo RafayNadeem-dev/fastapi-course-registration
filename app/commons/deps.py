@@ -58,3 +58,4 @@ def require_role(*allowed_roles: UserRolesEnum):
 
 require_student = require_role(UserRolesEnum.STUDENT)
 require_instructor = require_role(UserRolesEnum.INSTRUCTOR)
+require_admin = require_role(UserRolesEnum.ADMIN)

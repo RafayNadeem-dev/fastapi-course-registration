@@ -2,18 +2,20 @@ from fastapi import APIRouter, Depends, HTTPException, status
 from fastapi.security import OAuth2PasswordRequestForm
 from sqlalchemy.orm import Session
 
-from app.commons.deps import get_current_user
+from app.commons.deps import get_current_user, require_admin
 from app.core.db import get_db
 from app.core.security import create_access_token
 from app.user import crud
 from app.user.models import User, UserRolesEnum
-from app.user.schemas.user import UserCreate, UserOut, UserCreate, UserUpdate
+from app.user.schemas.user import UserCreate, UserOut, UserRegister, UserUpdate
 
 router = APIRouter(tags=["auth"])
 
 
 @router.post("/auth/register", response_model=UserOut, status_code=status.HTTP_201_CREATED)
-def register(data: UserCreate, db: Session = Depends(get_db)):
+def register(data: UserRegister, db: Session = Depends(get_db)):
+    """Public self-registration. Always creates a STUDENT; instructor/admin
+    accounts can only be created by an admin via POST /users."""
     payload = UserCreate(
         email=data.email,
         full_name=data.full_name,
@@ -22,6 +24,19 @@ def register(data: UserCreate, db: Session = Depends(get_db)):
     )
     try:
         return crud.create_user(db, payload)
+    except ValueError as exc:
+        raise HTTPException(status.HTTP_409_CONFLICT, detail=str(exc))
+
+
+@router.post("/users", response_model=UserOut, status_code=status.HTTP_201_CREATED)
+def create_user(
+    data: UserCreate,
+    db: Session = Depends(get_db),
+    _admin: User = Depends(require_admin),
+):
+    """Admin-only. Creates a user with any role (e.g. instructor, admin)."""
+    try:
+        return crud.create_user(db, data)
     except ValueError as exc:
         raise HTTPException(status.HTTP_409_CONFLICT, detail=str(exc))
 
@@ -53,11 +68,8 @@ def update_me(
     db: Session = Depends(get_db),
     current_user: User = Depends(get_current_user),
 ):
-    if data.role is not None and data.role.value != current_user.role:
-        raise HTTPException(
-            status.HTTP_403_FORBIDDEN,
-            detail="Cannot change your own role",
-        )
+    # UserUpdate intentionally omits `role`, so users can't change their own
+    # role here. Role changes are admin-only (POST /users / admin tooling).
     try:
         return crud.update_user(db, current_user, data)
     except ValueError as exc:

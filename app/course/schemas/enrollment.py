@@ -1,17 +1,14 @@
 from pydantic import BaseModel, ConfigDict
 
 
-class EnrollmentBase(BaseModel):
+class EnrollmentCreate(BaseModel):
     course_id: int
 
 
-class EnrollmentCreate(EnrollmentBase):
-    pass
-
-
-class EnrollmentOut(EnrollmentBase):
+class EnrollmentOut(BaseModel):
     id: int
     student_id: int
+    course_version_id: int
     status: str
 
     model_config = ConfigDict(from_attributes=True)

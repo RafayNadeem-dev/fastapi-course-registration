@@ -41,7 +41,14 @@ async def create_enrollment(
             status.HTTP_404_NOT_FOUND, detail=f"Course {data.course_id} not found"
         )
 
-    existing = crud.get_enrollment(db, current_user.id, data.course_id)
+    published = crud.get_latest_published_version(db, data.course_id)
+    if published is None:
+        raise HTTPException(
+            status.HTTP_409_CONFLICT,
+            detail=f"Course {data.course_id} has no published version available for enrollment",
+        )
+
+    existing = crud.get_enrollment_for_course(db, current_user.id, data.course_id)
     if existing is not None:
         if existing.status == EnrollmentStatusEnum.ENROLLED.value:
             raise HTTPException(
@@ -54,16 +61,17 @@ async def create_enrollment(
                 detail="Student already completed this course",
             )
 
-    workflow_id = f"enroll-{current_user.id}-{data.course_id}-{uuid.uuid4()}"
+    workflow_id = f"enroll-{current_user.id}-{published.id}-{uuid.uuid4()}"
     handle = await temporal.start_workflow(
         StudentEnrollmentWorkflow.run,
-        args=[current_user.id, data.course_id],
+        args=[current_user.id, published.id],
         id=workflow_id,
         task_queue=settings.TEMPORAL_TASK_QUEUE,
     )
     return {
         "workflow_id": handle.id,
         "run_id": handle.result_run_id,
+        "course_version_id": published.id,
         "task_queue": settings.TEMPORAL_TASK_QUEUE,
         "status": "scheduled",
     }
